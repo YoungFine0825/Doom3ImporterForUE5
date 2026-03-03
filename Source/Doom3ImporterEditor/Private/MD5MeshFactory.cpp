@@ -17,6 +17,9 @@
 #include "IMeshBuilderModule.h"
 #include "EditorFramework/AssetImportData.h"
 #include "MeshUtilities.h"
+#include "MD5MeshImportOptions.h"
+#include "SMD5MeshImportOptionsWindow.h"
+#include "Interfaces/IMainFrameModule.h"
 
 FVector3f aiVec3ToFVec3(aiVector3D& aiVec)
 {
@@ -112,7 +115,7 @@ const aiScene* UMD5MeshFactory::LoadAssimpSceneFromFile(Assimp::Importer* Import
 	const aiScene* Scene = Importer->ReadFile(TCHAR_TO_UTF8(*Filename),
 		aiProcess_Triangulate
 		|aiProcess_PopulateArmatureData
-		//|aiProcess_FlipUVs
+		|aiProcess_FlipUVs
 		|aiProcess_GenSmoothNormals//生成平滑法线
 		|aiProcess_GenSmoothNormals//修正反向法线
 		);
@@ -200,27 +203,40 @@ UObject* UMD5MeshFactory::CreateOrOverwriteMD5SkeletonMesh(USkeletalMesh* Existi
 	{
 		SkeletalMesh = NewObject<USkeletalMesh>(InParent,InClass,InName,Flags);
 	}
+	//选择需要导入的子网格
+	UMD5MeshImportOptions* ImportOptions = NewObject<UMD5MeshImportOptions>(GetTransientPackage(), NAME_None, RF_Transactional);
+	if(!GetMD5MeshImportOptions(ImportOptions,Scene))
+	{
+		FailureCleanup();
+		return nullptr;
+	}
 	//导入中间数据结构
 	Doom3Importer::FMD5MeshImportData ImportData;
-	FillImportDataFromAiScene(ImportData,Scene);
+	if(!FillImportDataFromAiScene(ImportData,ImportOptions,Scene))
+	{
+		FailureCleanup();
+		return nullptr;
+	}
 	//
 	int32 LodIndex = 0;
-	if(ExistingSkelMesh != nullptr)
-	{
-		FSkeletalMeshImportData::ReplaceSkeletalMeshGeometryImportData(ExistingSkelMesh, &ImportData, LodIndex);
-		FSkeletalMeshImportData::ReplaceSkeletalMeshRigImportData(ExistingSkelMesh, &ImportData, LodIndex);
-	}
+	// if(ExistingSkelMesh != nullptr)
+	// {
+	// 	FSkeletalMeshImportData::ReplaceSkeletalMeshGeometryImportData(ExistingSkelMesh, &ImportData, LodIndex);
+	// 	FSkeletalMeshImportData::ReplaceSkeletalMeshRigImportData(ExistingSkelMesh, &ImportData, LodIndex);
+	// }
 	//
 	FBox3f BoundingBox(ImportData.Points.GetData(), ImportData.Points.Num());
 	const FVector3f BoundingBoxSize = BoundingBox.GetSize();
 	//
 	FSkeletalMeshBuildSettings BuildOptions;
 	//Make sure the build option change in the re-import ui is reconduct
-	BuildOptions.bUseFullPrecisionUVs = false;
+	BuildOptions.bUseFullPrecisionUVs = true;
 	BuildOptions.bUseBackwardsCompatibleF16TruncUVs = false;
 	BuildOptions.bUseHighPrecisionTangentBasis = false;
-	BuildOptions.bRecomputeNormals = true;
-	BuildOptions.bRecomputeTangents = true;
+	BuildOptions.bRecomputeNormals = false;
+	BuildOptions.bRecomputeTangents = false;
+	BuildOptions.bRemoveDegenerates = false;
+	BuildOptions.bUseMikkTSpace = false;
 	TSharedPtr<FExistingSkelMeshData> ExistSkelMeshDataPtr;
 	if (ExistingSkelMesh)
 	{
@@ -305,6 +321,7 @@ UObject* UMD5MeshFactory::CreateOrOverwriteMD5SkeletonMesh(USkeletalMesh* Existi
 			ExistingSkeleton = Skeleton;
 		}
 	}
+	
 	if (!SkeletalMeshImportUtils::ProcessImportMeshSkeleton(ExistingSkeleton, SkeletalMesh->GetRefSkeleton(), SkeletalDepth, ImportData))
 	{
 		UE_LOG(LogTemp,Error,TEXT("SkeletalMeshImportUtils.ProcessImportMeshSkeleton failed!"));
@@ -359,28 +376,83 @@ UObject* UMD5MeshFactory::CreateOrOverwriteMD5SkeletonMesh(USkeletalMesh* Existi
 	return SkeletalMesh;
 }
 
-/*
- * 填充FSkeletalMeshImportData数据结构
- */
-bool UMD5MeshFactory::FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportData& ImportData, const aiScene* Scene)
+bool UMD5MeshFactory::GetMD5MeshImportOptions(UMD5MeshImportOptions* ImportOptions, const aiScene* Scene)
 {
-	ImportData.bHasNormals = true;
-	ImportData.bHasTangents = true;
-	//过滤无用的Mesh
-	TArray<aiMesh*> ValidMeshes;
+	int MeshCount = 0;
 	for(unsigned int i = 0; i < Scene->mNumMeshes; ++i)
 	{
 		FString MeshName = Scene->mMeshes[i]->mName.C_Str();
 		if(!MeshName.Equals("textures/common/shadow.msh"))//我们不需要用于渲染阴影的Mesh
 		{
-			ValidMeshes.Add(Scene->mMeshes[i]);
+			FMD5MeshImportEntry Entry;
+			Entry.Index = i;
+			Entry.MeshName = MeshName;
+			Entry.bShouldImport = true;
+			ImportOptions->SubmesheList.Add(Entry);
+			MeshCount++;
+		}
+	}
+	TSharedPtr<SWindow> ParentWindow;
+	if (FModuleManager::Get().IsModuleLoaded("MainFrame"))
+	{
+		IMainFrameModule& MainFrame = FModuleManager::LoadModuleChecked<IMainFrameModule>("MainFrame");
+		ParentWindow = MainFrame.GetParentWindow();
+	}
+	TSharedRef<SWindow> Window = SNew(SWindow)
+		.ClientSize(FVector2D(450.f, 550.f))
+		.Title(FText::FromString("MD5 Mesh Import Options"));
+	
+	TSharedPtr<SMD5MeshImportOptionsWindow> MD5MeshOptionsWindow;
+	Window->SetContent
+	(
+		SAssignNew(MD5MeshOptionsWindow, SMD5MeshImportOptionsWindow)
+		.ImportOptions(ImportOptions)
+		.WidgetWindow(Window)
+	);
+
+	FSlateApplication::Get().AddModalWindow(Window, ParentWindow, false);
+
+	if (!MD5MeshOptionsWindow->ShouldImport())
+	{
+		return false;
+	}
+	if(ImportOptions->SubmesheList.Num() <= 0)
+	{
+		return false;
+	}
+	return true;
+}
+
+
+/*
+ * 填充FSkeletalMeshImportData数据结构
+ */
+bool UMD5MeshFactory::FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportData& ImportData, UMD5MeshImportOptions* ImportOptions,const aiScene* Scene)
+{
+	ImportData.bHasNormals = true;
+	ImportData.bHasTangents = true;
+	ImportData.NumTexCoords = 1;//默认只包含一个纹理通道
+	//找出需要导入的Mesh
+	TArray<aiMesh*> ValidMeshes;
+	for(int32 i = 0; i < ImportOptions->SubmesheList.Num(); i++)
+	{
+		if(ImportOptions->SubmesheList[i].bShouldImport)
+		{
+			int MeshIndex = ImportOptions->SubmesheList[i].Index;
+			ValidMeshes.Add(Scene->mMeshes[MeshIndex]);
 		}
 	}
 	int32 MeshCount = ValidMeshes.Num();
+	if(MeshCount <= 0)
+	{
+		return false;
+	}
+	//
+	float FinalScale = ImportOptions->ImportScale;
 	//收集骨骼
 	TArray<FString> BonesNames;
 	TArray<FBoneImportData> Bones;
-	ExtractBones(Scene->mRootNode,BonesNames,Bones);
+	ExtractBones(Scene->mRootNode,BonesNames,Bones,ImportOptions);
 	//保存骨骼数据并判断父骨骼的索引
 	for(int32 b = 0; b < Bones.Num(); ++b)
 	{
@@ -421,10 +493,12 @@ bool UMD5MeshFactory::FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportDat
 		for(unsigned int v = 0;v < Mesh->mNumVertices;++v)
 		{
 			aiVector3d Vertex = Mesh->mVertices[v];
-			ImportData.Points.Add(FVector3f(Vertex.x,Vertex.y,Vertex.z));
+			ImportData.Points.Add(FVector3f(Vertex.x,Vertex.y,Vertex.z) * FVector3f(FinalScale, FinalScale,FinalScale));
 			//
 			SkeletalMeshImportData::FVertex VertexData;
 			VertexData.VertexIndex = VertexOffset + v;
+			VertexData.MatIndex = m;
+			VertexData.Color = FColor::White;
 			if(Mesh->HasTextureCoords(0))
 			{
 				VertexData.UVs[0] = FVector2f(Mesh->mTextureCoords[0][v].x, Mesh->mTextureCoords[0][v].y);
@@ -446,12 +520,17 @@ bool UMD5MeshFactory::FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportDat
 				FaceData.WedgeIndex[index] = VertexIndex + VertexOffset;
 				if(Mesh->HasNormals())
 				{
-					FaceData.TangentX[index] = aiVec3ToFVec3(Mesh->mNormals[VertexIndex]);
+					FaceData.TangentZ[index] = aiVec3ToFVec3(Mesh->mNormals[VertexIndex]);
 				}
 				if(Mesh->HasTangentsAndBitangents())
 				{
-					FaceData.TangentY[index] = aiVec3ToFVec3(Mesh->mTangents[VertexIndex]);
-					FaceData.TangentZ[index] = aiVec3ToFVec3(Mesh->mBitangents[VertexIndex]);
+					FaceData.TangentX[index] = aiVec3ToFVec3(Mesh->mTangents[VertexIndex]);
+					FaceData.TangentY[index] = aiVec3ToFVec3(Mesh->mBitangents[VertexIndex]);
+				}
+				else
+				{
+					FaceData.TangentX[index] = FVector3f(0.f, 0.f, 1.f);
+					FaceData.TangentY[index] = FVector3f(0.f, 0.f, 1.f);
 				}
 			}
 			ImportData.Faces.Add(FaceData);
@@ -482,7 +561,7 @@ bool UMD5MeshFactory::FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportDat
 }
 
 
-void UMD5MeshFactory::ExtractBones(const aiNode* node,TArray<FString>& BonesNames,TArray<FBoneImportData>& BonesData)
+void UMD5MeshFactory::ExtractBones(const aiNode* node,TArray<FString>& BonesNames,TArray<FBoneImportData>& BonesData,UMD5MeshImportOptions* ImportOptions)
 {
 	FString NodeName = node->mName.C_Str();
 	if(!NodeName.StartsWith("<MD5_") && !BonesNames.Contains(NodeName))
@@ -498,7 +577,8 @@ void UMD5MeshFactory::ExtractBones(const aiNode* node,TArray<FString>& BonesName
 		aiVector3D Pos,Scale;
 		aiQuaternion Rotation;
 		node->mTransformation.Decompose(Scale, Rotation, Pos);
-		BoneData.BonePos.Transform.SetLocation(FVector3f(Pos.x, Pos.y, Pos.z));
+		float FinalScale = ImportOptions->ImportScale;
+		BoneData.BonePos.Transform.SetLocation(FVector3f(Pos.x, Pos.y, Pos.z) * FVector3f(FinalScale,FinalScale,FinalScale));
 		BoneData.BonePos.Transform.SetRotation(FQuat4f(Rotation.x, Rotation.y, Rotation.z, Rotation.w));
 		BonesData.Add(BoneData);
 	}
@@ -506,7 +586,7 @@ void UMD5MeshFactory::ExtractBones(const aiNode* node,TArray<FString>& BonesName
 	{
 		for(uint32 c = 0; c < node->mNumChildren; ++c)
 		{
-			ExtractBones(node->mChildren[c],BonesNames,BonesData);
+			ExtractBones(node->mChildren[c],BonesNames,BonesData,ImportOptions);
 		}		
 	}
 }

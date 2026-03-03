@@ -31,6 +31,9 @@ public class Doom3ImporterEditor : ModuleRules
 				"EditorFramework",
 				"MainFrame", 
 				"SkeletalMeshUtilitiesCommon",
+				"PropertyEditor",
+				"Slate",
+				"SlateCore",
 			}
 			);
 	}
