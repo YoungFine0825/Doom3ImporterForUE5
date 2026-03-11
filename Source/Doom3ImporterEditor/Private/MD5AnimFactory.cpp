@@ -163,6 +163,7 @@ UObject* UMD5AnimFactory::FactoryCreateFile(UClass* InClass, UObject* InParent, 
 	NewAnim->PostEditChange();
 	// Notify the asset registry
 	FAssetRegistryModule::AssetCreated(NewAnim);
+	delete Importer;
 	return NewAnim;
 }
 

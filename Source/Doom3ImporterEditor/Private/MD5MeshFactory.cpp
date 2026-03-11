@@ -597,6 +597,7 @@ void UMD5MeshFactory::ExtractBones(const aiNode* node,TArray<FString>& BonesName
 	}
 }
 
+//创建RenderData
 bool UMD5MeshFactory::CreateRenderData(
 	Doom3Importer::FMD5MeshImportData* SkelMeshImportDataPtr,
 	USkeletalMesh* SkeletalMesh,
