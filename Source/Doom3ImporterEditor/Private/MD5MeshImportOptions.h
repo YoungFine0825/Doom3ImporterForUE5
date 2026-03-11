@@ -29,4 +29,7 @@ public:
 	//按照2.5倍放大差不多合适。
 	UPROPERTY(EditAnywhere)
 	float ImportScale = 2.5f;
+
+	UPROPERTY(EditAnywhere)
+	bool bCreatePhysicsAsset = true;
 };

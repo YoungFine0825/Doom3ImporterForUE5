@@ -66,7 +66,7 @@ void SMD5MeshImportOptionsWindow::Construct(const FArguments& InArgs)
 					+ SScrollBox::Slot() [ListContent]
 				]
 			]
-
+			//全选/取消全选按钮
 			+ SVerticalBox::Slot().AutoHeight().Padding(10,5)
 			[
 				SNew(SHorizontalBox)
@@ -81,6 +81,26 @@ void SMD5MeshImportOptionsWindow::Construct(const FArguments& InArgs)
 					SNew(SButton)
 					.Text(FText::FromString("Deselect All"))
 					.OnClicked(this, &SMD5MeshImportOptionsWindow::OnSetAllImport,false)
+				]
+			]
+			//创建物理资产复选框
+			+ SVerticalBox::Slot().AutoHeight().Padding(10)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(5,2)
+				[
+					SNew(SCheckBox)
+					.IsChecked_Lambda([this]() {return this->ImportOptions->bCreatePhysicsAsset ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;})
+					.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState){this->ImportOptions->bCreatePhysicsAsset = (NewState == ECheckBoxState::Checked);})
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString("Create Physics Asset"))
 				]
 			]
 			

@@ -17,10 +17,11 @@
 #include "ImportUtils/SkelImport.h"
 #include "IMeshBuilderModule.h"
 #include "EditorFramework/AssetImportData.h"
-#include "MeshUtilities.h"
 #include "MD5MeshImportOptions.h"
 #include "SMD5MeshImportOptionsWindow.h"
 #include "Interfaces/IMainFrameModule.h"
+#include "PhysicsAssetUtils.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 
 UMD5MeshFactory::UMD5MeshFactory()
 {
@@ -302,7 +303,7 @@ UObject* UMD5MeshFactory::CreateOrOverwriteMD5SkeletonMesh(USkeletalMesh* Existi
 	NewLODInfo.ReductionSettings.MaxDeviationPercentage = 0.0f;
 	NewLODInfo.LODHysteresis = 0.02f;
 
-	//Store the original fbx import data the SkelMeshImportDataPtr should not be modified after this
+	//!!! 暂存网格数据到SkeletalMesh中的BulkData（大块数据）中，后面CreateRenderData中的MeshBuilderModule将用到
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	SkeletalMesh->SaveLODImportedData(LodIndex, ImportData);
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -329,6 +330,29 @@ UObject* UMD5MeshFactory::CreateOrOverwriteMD5SkeletonMesh(USkeletalMesh* Existi
 	else
 	{
 		UE_LOG(LogTemp,Error,TEXT("USkeleton.MergeAllBonesToBoneTree failed!"));
+	}
+
+	//创建物理资产
+	if (SkeletalMesh->GetPhysicsAsset() == NULL && ImportOptions->bCreatePhysicsAsset)
+	{
+		FString ObjectName = FString::Printf(TEXT("%s_PhysicsAsset"), *SkeletalMesh->GetName());
+		UPhysicsAsset * NewPhysicsAsset = CreateAsset<UPhysicsAsset>(InParent->GetName(), ObjectName, true);
+		if (NewPhysicsAsset)
+		{
+			FPhysAssetCreateParams NewBodyData;
+			NewBodyData.MinBoneSize = 0.5f; // 忽略太小的骨骼（如手指末梢）
+			NewBodyData.GeomType = EFG_Sphyl; // 默认使用胶囊体
+			FText CreationErrorMessage;
+			bool bSuccess = FPhysicsAssetUtils::CreateFromSkeletalMesh(NewPhysicsAsset, SkeletalMesh, NewBodyData, CreationErrorMessage);
+			if (bSuccess)
+			{
+				UE_LOG(LogTemp, Log, TEXT("Successfully created Physics Asset for: %s"), *SkeletalMesh->GetName());
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("Created Physics Asset for %s failed! %s"), *SkeletalMesh->GetName(),*(CreationErrorMessage.ToString()));
+			}
+		}
 	}
 	
 	if (SkeletalMesh->GetSkeleton() != ExistingSkeleton)
@@ -617,7 +641,7 @@ bool UMD5MeshFactory::CreateRenderData(
 
 	//The imported LOD is always 0 here, the LOD custom import will import the LOD alone(in a temporary skeletalmesh) and add it to the base skeletal mesh later
 	check(SkeletalMesh->GetLODInfo(ImportLODModelIndex) != nullptr);
-	//Set the build options
+	//设置 build options
 	SkeletalMesh->GetLODInfo(ImportLODModelIndex)->BuildSettings = BuildOptions;
 	//New MeshDescription build process
 	IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForRunningPlatform();
@@ -628,7 +652,9 @@ bool UMD5MeshFactory::CreateRenderData(
 	// Solution: Allocate an uninitialized rendering resource then release it after the call to IMeshBuilderModule::BuildSkeletalMesh
 	//			 Although the legacy importer does not support Nanite for skeletal mesh, the call succeeds even if Nanite is manually set to true
 	//			 Hopefully, this solution will last until the legacy FBX importer is deprecated.
+	//先分配资源
 	SkeletalMesh->AllocateResourceForRendering();
+	//根据暂存数据构建网格
 	bool bBuildSuccess = MeshBuilderModule.BuildSkeletalMesh(*SkeletalMesh->GetResourceForRendering(), SkeletalMeshBuildParameters);
 	SkeletalMesh->ReleaseResources();
 
@@ -664,6 +690,7 @@ bool UMD5MeshFactory::CreateRenderData(
 
 	SkeletalMesh->CalculateInvRefMatrices();
 
+	//触发最后的资源更新，确保编辑器视口能立即看到模型
 	//We need to have a valid render data to create physic asset
 	SkeletalMesh->Build();
 
