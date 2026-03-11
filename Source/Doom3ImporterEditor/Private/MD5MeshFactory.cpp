@@ -1,4 +1,5 @@
 #include "MD5MeshFactory.h"
+#include "MD5ImportUtil.h"
 #include "assimp/Importer.hpp"
 #include "assimp/scene.h"
 #include "assimp/postprocess.h"
@@ -20,11 +21,6 @@
 #include "MD5MeshImportOptions.h"
 #include "SMD5MeshImportOptionsWindow.h"
 #include "Interfaces/IMainFrameModule.h"
-
-FVector3f aiVec3ToFVec3(aiVector3D& aiVec)
-{
-	return FVector3f{ aiVec.x, aiVec.y, aiVec.z };
-}
 
 UMD5MeshFactory::UMD5MeshFactory()
 {
@@ -80,50 +76,17 @@ bool UMD5MeshFactory::FactoryCanImport(const FString& Filename)
 
 bool UMD5MeshFactory::CanReimport(UObject* Obj, TArray<FString>& OutFilenames)
 {
-	UAssetImportData* SceneImportData = Cast<UAssetImportData>(Obj);
-	if(SceneImportData)
-	{
-		FAssetImportInfo& ImportInfo = SceneImportData->SourceData;
-		for (auto Element : ImportInfo.SourceFiles)
-		{
-			FString FileName = Element.RelativeFilename;
-		}
-	}
 	return true;
 }
 
 void UMD5MeshFactory::SetReimportPaths(UObject* Obj, const TArray<FString>& NewReimportPaths)
 {
-	UAssetImportData* SceneImportData = Cast<UAssetImportData>(Obj);
-	if(SceneImportData)
-	{
-		FAssetImportInfo& ImportInfo = SceneImportData->SourceData;
-		for (auto Element : ImportInfo.SourceFiles)
-		{
-			FString FileName = Element.RelativeFilename;
-		}
-	}
+
 }
 
 int32 UMD5MeshFactory::GetPriority() const
 {
 	return ImportPriority;
-}
-
-const aiScene* UMD5MeshFactory::LoadAssimpSceneFromFile(Assimp::Importer* Importer,const FString& Filename)
-{
-	const aiScene* Scene = Importer->ReadFile(TCHAR_TO_UTF8(*Filename),
-		aiProcess_Triangulate
-		|aiProcess_PopulateArmatureData
-		|aiProcess_FlipUVs
-		|aiProcess_GenSmoothNormals//生成平滑法线
-		|aiProcess_GenSmoothNormals//修正反向法线
-		);
-	if (Scene == nullptr || !Scene->HasMeshes())
-	{
-		UE_LOG(LogTemp,Error,TEXT("Failed to read md5meshes %hs"),TCHAR_TO_UTF8(Importer->GetErrorString()));
-	}
-	return Scene;
 }
 
 EReimportResult::Type UMD5MeshFactory::Reimport( UObject* Obj )
@@ -136,7 +99,7 @@ EReimportResult::Type UMD5MeshFactory::Reimport( UObject* Obj )
 			UAssetImportData* ImportData = SkeletalMesh->GetAssetImportData();
 			FString FileName = ImportData->SourceData.SourceFiles[0].RelativeFilename;
 			Assimp::Importer* Importer = new Assimp::Importer();
-			const aiScene* Scene = LoadAssimpSceneFromFile(Importer,TCHAR_TO_UTF8(*FileName));
+			const aiScene* Scene = MD5ImportUtil::LoadAssimpSceneFromFile(Importer,TCHAR_TO_UTF8(*FileName));
 			if(!Scene || !Scene->HasMeshes())
 			{
 				delete Importer;
@@ -162,7 +125,7 @@ EReimportResult::Type UMD5MeshFactory::Reimport( UObject* Obj )
 UObject* UMD5MeshFactory::FactoryCreateFile(UClass* InClass, UObject* InParent, FName InName, EObjectFlags Flags, const FString& Filename, const TCHAR* Parms, FFeedbackContext* Warn, bool& bOutOperationCanceled)
 {
 	Assimp::Importer* Importer = new Assimp::Importer();
-	const aiScene* Scene = LoadAssimpSceneFromFile(Importer,TCHAR_TO_UTF8(*Filename));
+	const aiScene* Scene = MD5ImportUtil::LoadAssimpSceneFromFile(Importer,TCHAR_TO_UTF8(*Filename));
 	if(!Scene || !Scene->HasMeshes())
 	{
 		delete Importer;
@@ -452,6 +415,7 @@ bool UMD5MeshFactory::FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportDat
 	//收集骨骼
 	TArray<FString> BonesNames;
 	TArray<FBoneImportData> Bones;
+	BoneRootRotationFix = ComputeRootNodeRotationFix(Scene->mRootNode);
 	ExtractBones(Scene->mRootNode,BonesNames,Bones,ImportOptions);
 	//保存骨骼数据并判断父骨骼的索引
 	for(int32 b = 0; b < Bones.Num(); ++b)
@@ -492,8 +456,8 @@ bool UMD5MeshFactory::FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportDat
 		//顶点数据
 		for(unsigned int v = 0;v < Mesh->mNumVertices;++v)
 		{
-			aiVector3d Vertex = Mesh->mVertices[v];
-			ImportData.Points.Add(FVector3f(Vertex.x,Vertex.y,Vertex.z) * FVector3f(FinalScale, FinalScale,FinalScale));
+			aiVector3D Vertex = Mesh->mVertices[v];
+			ImportData.Points.Add(BoneRootRotationFix.RotateVector(FVector3f(MD5ImportUtil::aiVec3ToFVec3(Vertex)) * FVector3f(FinalScale, FinalScale,FinalScale)));
 			//
 			SkeletalMeshImportData::FVertex VertexData;
 			VertexData.VertexIndex = VertexOffset + v;
@@ -520,12 +484,12 @@ bool UMD5MeshFactory::FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportDat
 				FaceData.WedgeIndex[index] = VertexIndex + VertexOffset;
 				if(Mesh->HasNormals())
 				{
-					FaceData.TangentZ[index] = aiVec3ToFVec3(Mesh->mNormals[VertexIndex]);
+					FaceData.TangentZ[index] = BoneRootRotationFix.RotateVector(MD5ImportUtil::aiVec3ToFVec3(Mesh->mNormals[VertexIndex]));
 				}
 				if(Mesh->HasTangentsAndBitangents())
 				{
-					FaceData.TangentX[index] = aiVec3ToFVec3(Mesh->mTangents[VertexIndex]);
-					FaceData.TangentY[index] = aiVec3ToFVec3(Mesh->mBitangents[VertexIndex]);
+					FaceData.TangentX[index] = BoneRootRotationFix.RotateVector(MD5ImportUtil::aiVec3ToFVec3(Mesh->mTangents[VertexIndex]));
+					FaceData.TangentY[index] = BoneRootRotationFix.RotateVector(MD5ImportUtil::aiVec3ToFVec3(Mesh->mBitangents[VertexIndex]));
 				}
 				else
 				{
@@ -561,9 +525,45 @@ bool UMD5MeshFactory::FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportDat
 }
 
 
+aiNode* UMD5MeshFactory::FindActualRootBone(aiNode* Node)
+{
+	FString NodeName = Node->mName.C_Str();
+	if(NodeName.Equals("origin"))
+	{
+		return Node;
+	}
+	else
+	{
+		for(unsigned int nodeIndex = 0; nodeIndex < Node->mNumChildren; ++nodeIndex)
+		{
+			aiNode* Root = FindActualRootBone(Node->mChildren[nodeIndex]);
+			if(Root)
+			{
+				return Root;
+			}
+		}
+	}
+	return nullptr;
+}
+
+FQuat4f UMD5MeshFactory::ComputeRootNodeRotationFix(aiNode* Node)
+{
+	aiNode* BoneRoot = FindActualRootBone(Node);
+	if(BoneRoot == nullptr)
+	{
+		return FQuat4f::Identity;
+	}
+	aiVector3D NodePos,NodeScale;
+	aiQuaternion NodeRotation;
+	BoneRoot->mTransformation.Decompose(NodeScale, NodeRotation, NodePos);
+	return MD5ImportUtil::aiQuatToFQuat(NodeRotation).Inverse();
+}
+
 void UMD5MeshFactory::ExtractBones(const aiNode* node,TArray<FString>& BonesNames,TArray<FBoneImportData>& BonesData,UMD5MeshImportOptions* ImportOptions)
 {
 	FString NodeName = node->mName.C_Str();
+	aiVector3D Pos,Scale;
+	aiQuaternion Rotation;
 	if(!NodeName.StartsWith("<MD5_") && !BonesNames.Contains(NodeName))
 	{
 		int32 BoneIndex = BonesNames.Num();
@@ -574,12 +574,18 @@ void UMD5MeshFactory::ExtractBones(const aiNode* node,TArray<FString>& BonesName
 		{
 			BoneData.ParentName = node->mParent->mName.C_Str();
 		}
-		aiVector3D Pos,Scale;
-		aiQuaternion Rotation;
 		node->mTransformation.Decompose(Scale, Rotation, Pos);
 		float FinalScale = ImportOptions->ImportScale;
-		BoneData.BonePos.Transform.SetLocation(FVector3f(Pos.x, Pos.y, Pos.z) * FVector3f(FinalScale,FinalScale,FinalScale));
-		BoneData.BonePos.Transform.SetRotation(FQuat4f(Rotation.x, Rotation.y, Rotation.z, Rotation.w));
+		if(BoneIndex == 0)
+		{
+			BoneData.BonePos.Transform.SetLocation(BoneRootRotationFix.RotateVector(FVector3f(MD5ImportUtil::aiVec3ToFVec3(Pos)) * FVector3f(FinalScale,FinalScale,FinalScale)));
+			BoneData.BonePos.Transform.SetRotation(BoneRootRotationFix * MD5ImportUtil::aiQuatToFQuat(Rotation));
+		}
+		else
+		{
+			BoneData.BonePos.Transform.SetLocation(FVector3f(MD5ImportUtil::aiVec3ToFVec3(Pos)) * FVector3f(FinalScale,FinalScale,FinalScale));
+			BoneData.BonePos.Transform.SetRotation(MD5ImportUtil::aiQuatToFQuat(Rotation));
+		}
 		BonesData.Add(BoneData);
 	}
 	if(node->mNumChildren > 0)

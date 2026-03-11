@@ -34,6 +34,8 @@ public class Doom3ImporterEditor : ModuleRules
 				"PropertyEditor",
 				"Slate",
 				"SlateCore",
+				"ControlRig",
+				"AnimationDataController",
 			}
 			);
 	}

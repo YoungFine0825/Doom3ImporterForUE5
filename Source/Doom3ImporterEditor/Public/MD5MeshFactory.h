@@ -74,10 +74,11 @@ protected:
 		return (T*)CreateAssetOfClass(T::StaticClass(), ParentPackageName, ObjectName, bAllowReplace);
 	}
 
-	const aiScene* LoadAssimpSceneFromFile(Assimp::Importer* Importer,const FString& Filename);
 	UObject* CreateOrOverwriteMD5SkeletonMesh(USkeletalMesh* ExistingSkelMesh,const aiScene* Scene,UClass* InClass, UObject* InParent, FName InName, EObjectFlags Flags);
 	bool GetMD5MeshImportOptions(UMD5MeshImportOptions* ImportOptions,const aiScene* Scene);
 	bool FillImportDataFromAiScene(Doom3Importer::FMD5MeshImportData& ImportData,UMD5MeshImportOptions* ImportOptions,const aiScene* Scene);
+	aiNode* FindActualRootBone(aiNode* Node);
+	FQuat4f ComputeRootNodeRotationFix(aiNode* Node);
 	void ExtractBones(const aiNode* node,TArray<FString>& BonesNames,TArray<FBoneImportData>& BonesData,UMD5MeshImportOptions* ImportOptions);
 	bool CreateRenderData(Doom3Importer::FMD5MeshImportData* SkelMeshImportDataPtr,
 		USkeletalMesh* SkeletalMesh,
@@ -85,4 +86,7 @@ protected:
 		TSharedPtr<FExistingSkelMeshData> ExistSkelMeshDataPtr,
 		FSkeletalMeshBuildSettings& BuildOptions,
 		int ImportLODModelIndex);
+
+protected:
+	FQuat4f BoneRootRotationFix;
 };
